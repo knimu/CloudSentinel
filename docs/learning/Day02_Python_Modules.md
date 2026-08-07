@@ -57,6 +57,7 @@ __init__.py is simply a file that tells Python:
 That allows imports like:
 
 from backend.app import start_backend
+
 5. What is a package?
 
 Normal folder:
