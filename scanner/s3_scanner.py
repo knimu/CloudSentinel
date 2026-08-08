@@ -1,7 +1,13 @@
+from scanner.models import Finding
+
 def scan_s3():
-    return{
-        "service": "S3",
-        "resources": "demo-bucket",
-        "status": "PASS",
-        "message": "Bucket is private"
-    }
+    finding = Finding(
+        service="S3",
+        resource="demo-bucket",
+        status="FAIL",
+        severity="HIGH",
+        message="Bucket is publicly accessible",
+        recommendation="Disable public access"
+    )
+
+    return finding
