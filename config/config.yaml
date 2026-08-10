@@ -1,0 +1,10 @@
+project:
+  name: CloudSentinel
+  version: 1.0
+
+scanning:
+  enabled: true
+  default_severity: CRITICAL
+
+services:
+  - S3
