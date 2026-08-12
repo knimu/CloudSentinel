@@ -6,4 +6,5 @@ def start_backend():
     # print(results)
     for finding in results:
      print(finding)
+     print()
      

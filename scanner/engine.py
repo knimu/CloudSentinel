@@ -1,5 +1,9 @@
 from config.config_loader import load_config
-from scanner.s3_scanner import scan_s3
+from scanner.models import Finding
+from scanner.registry import get_scanner
+
+
+
 
 
 def run_all_scans():
@@ -10,9 +14,24 @@ def run_all_scans():
     if not config["scanning"]["enabled"]:
         return results
 
-    if "S3" in config["services"]:
-        severity = config["scanning"]["default_severity"]
+    severity = config["scanning"]["default_severity"]
 
-        results.append(scan_s3(severity))
+    for service in config["services"]:
+
+        scanner = get_scanner(service)
+
+        if scanner:
+          results.append(scanner(severity))
+        else:
+         results.append(
+        Finding(
+            service=service,
+            resource="N/A",
+            status="FAIL",
+            severity="HIGH",
+            message="No scanner available for this service",
+            recommendation="Remove the unsupported service or add a scanner"
+        )
+    )
 
     return results

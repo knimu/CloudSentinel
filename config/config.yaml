@@ -8,3 +8,5 @@ scanning:
 
 services:
   - S3
+  - IAM
+ 
