@@ -1,10 +1,10 @@
 from scanner.models import Finding
 
 
-def scan_iam(severity):
+def scan_iam(resource, severity):
     finding = Finding(
         service="IAM",
-        resource="demo-user",
+        resource=resource,
         status="FAIL",
         severity=severity,
         message="IAM user has excessive permissions",

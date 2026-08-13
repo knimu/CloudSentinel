@@ -1,9 +1,9 @@
 from scanner.models import Finding
 
-def scan_s3(severity):
+def scan_s3(resource,severity):
     finding = Finding(
         service="S3",
-        resource="demo-bucket",
+        resource=resource,
         status="FAIL",
         severity=severity,
         message="Bucket is publicly accessible",
