@@ -9,8 +9,7 @@ def scan_iam(resource, severity):
     iam = boto3.client("iam")
 
     try:
-        best_finding = None
-        best_score = 0
+        findings = []
 
         RISK_SCORES = {
             "LOW": 1,
@@ -24,26 +23,28 @@ def scan_iam(resource, severity):
             severity_level,
             policy_name,
             message,
-            recommendation
+            recommendation,
+            policy_type,
+            attached_to
         ):
-            nonlocal best_finding
-            nonlocal best_score
-
-            if score > best_score:
-
-                best_score = score
-
-                best_finding = {
+            findings.append(
+                {
+                    "score": score,
                     "severity": severity_level,
                     "policy": policy_name,
                     "message": message,
-                    "recommendation": recommendation
+                    "recommendation": recommendation,
+                    "policy_type": policy_type,
+                    "attached_to": attached_to
                 }
+            )
 
         def classify_actions(
             policy_name,
             actions,
-            resources
+            resources,
+            policy_type,
+            attached_to
         ):
 
             resource_wildcard = "*" in resources
@@ -68,7 +69,9 @@ def scan_iam(resource, severity):
                     (
                         "Restrict IAM actions and resources "
                         "to only those required"
-                    )
+                    ),
+                    policy_type,
+                    attached_to
                 )
 
                 return
@@ -102,7 +105,9 @@ def scan_iam(resource, severity):
                     (
                         "Restrict service-level actions "
                         "and resource scope to only those required"
-                    )
+                    ),
+                    policy_type,
+                    attached_to
                 )
 
                 return
@@ -137,7 +142,9 @@ def scan_iam(resource, severity):
                     (
                         "Restrict the resource scope "
                         "to only those required"
-                    )
+                    ),
+                    policy_type,
+                    attached_to
                 )
 
                 return
@@ -148,8 +155,6 @@ def scan_iam(resource, severity):
             # Example:
             # s3:GetObject
             # Resource: *
-            #
-            # Lower risk, but worth reviewing.
             # =========================================
 
             if resource_wildcard:
@@ -166,12 +171,16 @@ def scan_iam(resource, severity):
                     (
                         "Review whether wildcard resource "
                         "scope is required"
-                    )
+                    ),
+                    policy_type,
+                    attached_to
                 )
 
         def analyze_policy_document(
             policy_name,
-            document
+            document,
+            policy_type,
+            attached_to
         ):
 
             if isinstance(document, str):
@@ -200,11 +209,13 @@ def scan_iam(resource, severity):
                 classify_actions(
                     policy_name,
                     actions,
-                    resources
+                    resources,
+                    policy_type,
+                    attached_to
                 )
 
         # =================================================
-        # 1. DIRECT USER POLICIES
+        # 1. DIRECT USER MANAGED POLICIES
         # =================================================
 
         user_policies = iam.list_attached_user_policies(
@@ -215,8 +226,6 @@ def scan_iam(resource, severity):
 
             policy_name = policy["PolicyName"]
 
-            # AdministratorAccess is always treated
-            # as a critical finding.
             if policy_name == "AdministratorAccess":
 
                 save_finding(
@@ -229,7 +238,9 @@ def scan_iam(resource, severity):
                     ),
                     (
                         "Follow the principle of least privilege"
-                    )
+                    ),
+                    "User Managed Policy",
+                    resource
                 )
 
                 continue
@@ -253,11 +264,37 @@ def scan_iam(resource, severity):
 
             analyze_policy_document(
                 policy_name,
-                document
+                document,
+                "User Managed Policy",
+                resource
             )
 
         # =================================================
-        # 2. GROUP POLICIES
+        # 2. USER INLINE POLICIES
+        # =================================================
+
+        inline_policies = iam.list_user_policies(
+            UserName=resource
+        )
+
+        for policy_name in inline_policies["PolicyNames"]:
+
+            inline_response = iam.get_user_policy(
+                UserName=resource,
+                PolicyName=policy_name
+            )
+
+            document = inline_response["PolicyDocument"]
+
+            analyze_policy_document(
+                policy_name,
+                document,
+                "User Inline Policy",
+                resource
+            )
+
+        # =================================================
+        # 3. GROUP POLICIES
         # =================================================
 
         groups_response = iam.list_groups_for_user(
@@ -266,8 +303,38 @@ def scan_iam(resource, severity):
 
         for group in groups_response["Groups"]:
 
+            group_name = group["GroupName"]
+
+            # =============================================
+            # 3A. GROUP INLINE POLICIES
+            # =============================================
+
+            group_inline_policies = iam.list_group_policies(
+                GroupName=group_name
+            )
+
+            for policy_name in group_inline_policies["PolicyNames"]:
+
+                inline_response = iam.get_group_policy(
+                    GroupName=group_name,
+                    PolicyName=policy_name
+                )
+
+                document = inline_response["PolicyDocument"]
+
+                analyze_policy_document(
+                    policy_name,
+                    document,
+                    "Group Inline Policy",
+                    group_name
+                )
+
+            # =============================================
+            # 3B. GROUP MANAGED POLICIES
+            # =============================================
+
             group_policies = iam.list_attached_group_policies(
-                GroupName=group["GroupName"]
+                GroupName=group_name
             )
 
             for policy in group_policies["AttachedPolicies"]:
@@ -286,7 +353,9 @@ def scan_iam(resource, severity):
                         ),
                         (
                             "Follow the principle of least privilege"
-                        )
+                        ),
+                        "Group Managed Policy",
+                        group_name
                     )
 
                     continue
@@ -310,62 +379,105 @@ def scan_iam(resource, severity):
 
                 analyze_policy_document(
                     policy_name,
-                    document
+                    document,
+                    "Group Managed Policy",
+                    group_name
                 )
 
         # =================================================
-        # 3. INLINE POLICIES
+        # 4. NO FINDINGS
         # =================================================
 
-        inline_policies = iam.list_user_policies(
-            UserName=resource
-        )
-
-        if inline_policies["PolicyNames"]:
-
-            save_finding(
-                1,
-                "LOW",
-                "Inline Policy",
-                (
-                    "IAM user has inline policies "
-                    "that require review"
-                ),
-                (
-                    "Review inline policies and use "
-                    "managed policies where appropriate"
-                )
-            )
-
-        # =================================================
-        # 4. RETURN HIGHEST-RISK FINDING
-        # =================================================
-
-        if best_finding:
+        if not findings:
 
             return Finding(
                 service="IAM",
                 resource=resource,
-                status="FAIL",
-                severity=best_finding["severity"],
-                message=best_finding["message"],
-                recommendation=best_finding["recommendation"]
+                status="PASS",
+                severity="LOW",
+                message=(
+                    "IAM user permissions do not contain "
+                    "high-risk wildcard patterns"
+                ),
+                recommendation="No action required"
             )
 
         # =================================================
-        # 5. EVERYTHING LOOKS OK
+        # 5. DETERMINE HIGHEST SEVERITY
+        # =================================================
+
+        highest_finding = max(
+            findings,
+            key=lambda finding: finding["score"]
+        )
+
+        highest_severity = highest_finding["severity"]
+
+        # =================================================
+        # 6. BUILD SUMMARY
+        # =================================================
+
+        summary_lines = [
+            f"{len(findings)} IAM security issue(s) detected:"
+        ]
+
+        for index, finding in enumerate(findings, start=1):
+
+            summary_lines.append(
+                (
+                    f"{index}. "
+                    f"{finding['severity']} - "
+                    f"{finding['policy']} | "
+                    f"Type: {finding['policy_type']} | "
+                    f"Attached To: {finding['attached_to']} | "
+                    f"{finding['message']}"
+                )
+            )
+
+        message = "\n".join(summary_lines)
+
+        # =================================================
+        # 7. COMBINE RECOMMENDATIONS
+        # =================================================
+
+        if highest_severity == "CRITICAL":
+
+           recommendation = (
+             "Immediately review and restrict critical IAM "
+             "permissions according to the principle of least privilege."
+            )
+
+        elif highest_severity == "HIGH":
+
+            recommendation = (
+              "Review and restrict high-risk IAM permissions "
+              "according to the principle of least privilege."
+         )
+
+        elif highest_severity == "MEDIUM":
+
+            recommendation = (
+              "Review broad IAM permissions and restrict "
+              "resource scope where possible."
+        )
+
+        else:
+
+            recommendation = (
+              "Review IAM permissions and apply the principle "
+              "of least privilege."
+            )
+        # =================================================
+        # 8. RETURN ONE IAM FINDING
         # =================================================
 
         return Finding(
             service="IAM",
             resource=resource,
-            status="PASS",
-            severity="LOW",
-            message=(
-                "IAM user permissions do not contain "
-                "high-risk wildcard patterns"
-            ),
-            recommendation="No action required"
+            status="FAIL",
+            severity=highest_severity,
+            message=message,
+            recommendation=recommendation
         )
 
     except Exception as e:
