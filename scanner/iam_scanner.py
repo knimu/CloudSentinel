@@ -17,6 +17,35 @@ def scan_iam(resource, severity):
         findings = []
 
         # =================================================
+        # DANGEROUS IAM ACTIONS
+        # =================================================
+
+        HIGH_RISK_ACTIONS = {
+            "iam:CreateUser",
+            "iam:CreateAccessKey",
+            "iam:AttachUserPolicy",
+            "iam:AttachGroupPolicy",
+            "iam:AttachRolePolicy",
+            "iam:PutUserPolicy",
+            "iam:PutGroupPolicy",
+            "iam:PutRolePolicy",
+            "iam:CreatePolicyVersion",
+            "iam:SetDefaultPolicyVersion",
+            "iam:PassRole",
+            "s3:DeleteBucket",
+            "ec2:TerminateInstances"
+        }
+
+        MEDIUM_RISK_ACTIONS = {
+            "iam:DeleteUser",
+            "iam:DeleteAccessKey",
+            "iam:DeletePolicy",
+            "s3:PutObject",
+            "s3:DeleteObject",
+            "ec2:StopInstances"
+        }
+
+        # =================================================
         # SAVE FINDING
         # =================================================
 
@@ -66,6 +95,40 @@ def scan_iam(resource, severity):
             }
 
         # =================================================
+        # CONDITION ANALYSIS
+        # =================================================
+
+        def analyze_conditions(
+            policy_name,
+            policy_type,
+            attached_to,
+            condition
+        ):
+
+            if not condition:
+                return
+
+            condition_details = []
+
+            for operator, condition_values in condition.items():
+
+                if not isinstance(condition_values, dict):
+                    continue
+
+                for key, value in condition_values.items():
+
+                    condition_details.append(
+                        f"{operator}: {key} = {value}"
+                    )
+
+            if not condition_details:
+                return
+
+            # Conditions are informational for now.
+            # We do not create a security finding just because
+            # a policy contains a condition.
+
+        # =================================================
         # RESOURCE + ACTION ANALYSIS
         # =================================================
 
@@ -78,13 +141,39 @@ def scan_iam(resource, severity):
         ):
 
             # -------------------------------------------------
+            # Normalize actions
+            # -------------------------------------------------
+
+            if not isinstance(actions, list):
+                actions = [actions]
+
+            actions = [
+                action
+                for action in actions
+                if isinstance(action, str)
+            ]
+
+            # -------------------------------------------------
+            # Normalize resources
+            # -------------------------------------------------
+
+            if not isinstance(resources, list):
+                resources = [resources]
+
+            resources = [
+                resource
+                for resource in resources
+                if isinstance(resource, str)
+            ]
+
+            # -------------------------------------------------
             # Determine resource scope
             # -------------------------------------------------
 
             resource_wildcard = "*" in resources
 
             # -------------------------------------------------
-            # Parse scoped ARNs
+            # Parse scoped resources
             # -------------------------------------------------
 
             scoped_resources = [
@@ -102,8 +191,77 @@ def scan_iam(resource, severity):
                 if parsed:
                     parsed_resources.append(parsed)
 
+            # =================================================
+            # DAY 11 - DANGEROUS ACTION ANALYSIS
+            # =================================================
+
+            dangerous_high = [
+                action
+                for action in actions
+                if action in HIGH_RISK_ACTIONS
+            ]
+
+            dangerous_medium = [
+                action
+                for action in actions
+                if action in MEDIUM_RISK_ACTIONS
+            ]
+
             # -------------------------------------------------
-            # CASE 1
+            # HIGH-RISK ACTIONS
+            # -------------------------------------------------
+
+            if dangerous_high:
+
+                save_finding(
+                    4,
+                    "CRITICAL",
+                    policy_name,
+                    policy_type,
+                    attached_to,
+                    (
+                        f'Policy "{policy_name}" allows '
+                        f'high-risk action(s): '
+                        f'{", ".join(dangerous_high)}'
+                    ),
+                    (
+                        "Review high-risk permissions and "
+                        "restrict them to trusted identities "
+                        "and required resources"
+                    )
+                )
+
+                return
+
+            # -------------------------------------------------
+            # MEDIUM-RISK ACTIONS
+            # -------------------------------------------------
+
+            if dangerous_medium:
+
+                save_finding(
+                    2,
+                    "MEDIUM",
+                    policy_name,
+                    policy_type,
+                    attached_to,
+                    (
+                        f'Policy "{policy_name}" allows '
+                        f'potentially dangerous action(s): '
+                        f'{", ".join(dangerous_medium)}'
+                    ),
+                    (
+                        "Review the permissions and remove "
+                        "unnecessary write or destructive actions"
+                    )
+                )
+
+            # =================================================
+            # EXISTING WILDCARD ANALYSIS
+            # =================================================
+
+            # -------------------------------------------------
+            # CASE 1:
             # Action "*" + Resource "*"
             # -------------------------------------------------
 
@@ -128,22 +286,19 @@ def scan_iam(resource, severity):
                 return
 
             # -------------------------------------------------
-            # CASE 2
+            # CASE 2:
             # Service-level wildcard
             #
             # Examples:
             # s3:*
             # iam:*
             # ec2:*
-            #
-            # Resource: *
             # -------------------------------------------------
 
             service_wildcards = [
                 action
                 for action in actions
-                if isinstance(action, str)
-                and action.endswith(":*")
+                if action.endswith(":*")
             ]
 
             if service_wildcards and resource_wildcard:
@@ -168,22 +323,19 @@ def scan_iam(resource, severity):
                 return
 
             # -------------------------------------------------
-            # CASE 3
+            # CASE 3:
             # Broad action wildcard
             #
             # Examples:
             # s3:Get*
             # s3:List*
             # iam:Get*
-            #
-            # Resource: *
             # -------------------------------------------------
 
             broad_actions = [
                 action
                 for action in actions
-                if isinstance(action, str)
-                and "*" in action
+                if "*" in action
             ]
 
             if broad_actions and resource_wildcard:
@@ -208,7 +360,7 @@ def scan_iam(resource, severity):
                 return
 
             # -------------------------------------------------
-            # CASE 4
+            # CASE 4:
             # Specific action + wildcard resource
             #
             # Example:
@@ -239,56 +391,23 @@ def scan_iam(resource, severity):
                 return
 
             # -------------------------------------------------
-            # CASE 5
+            # CASE 5:
             # Scoped resource ARN
             #
             # Example:
             # arn:aws:s3:::bucket-name/*
             #
-            # Properly scoped resources are not considered
-            # security findings.
+            # Scoped resources are considered safe for now.
             # -------------------------------------------------
-
-            # We parse the ARNs so that later versions of
-            # CloudSentinel can validate service/resource
-            # matching.
 
             for parsed in parsed_resources:
 
                 service = parsed["service"]
                 resource_name = parsed["resource"]
 
-                # Currently no finding is generated.
-                # This is intentionally considered safe.
-
+                # Reserved for future service/resource validation.
                 _ = service
                 _ = resource_name
-
-        # =================================================
-        # CONDITION ANALYSIS
-        # =================================================
-
-        def analyze_conditions(
-            policy_name,
-            policy_type,
-            attached_to,
-            condition
-        ):
-
-            if not condition:
-                return
-
-            for operator, condition_values in condition.items():
-
-                if not isinstance(condition_values, dict):
-                    continue
-
-                for key, value in condition_values.items():
-
-                    print(
-                        f"Condition detected: "
-                        f"{operator} -> {key} = {value}"
-                    )
 
         # =================================================
         # POLICY DOCUMENT ANALYSIS
@@ -312,6 +431,9 @@ def scan_iam(resource, severity):
                 if not isinstance(document, dict):
                     return
 
+            if not isinstance(document, dict):
+                return
+
             # -------------------------------------------------
             # Get statements
             # -------------------------------------------------
@@ -331,8 +453,10 @@ def scan_iam(resource, severity):
             # -------------------------------------------------
 
             if isinstance(statements, dict):
-
                 statements = [statements]
+
+            if not isinstance(statements, list):
+                return
 
             # -------------------------------------------------
             # Analyze each statement
@@ -343,27 +467,11 @@ def scan_iam(resource, severity):
                 if not isinstance(statement, dict):
                     continue
 
-                effect = statement.get(
-                    "Effect"
-                )
-
                 # -------------------------------------------------
-                # DENY STATEMENT
+                # We only analyze Allow statements
                 # -------------------------------------------------
 
-                if effect == "Deny":
-
-                    # We currently do not create findings
-                    # for explicit Deny statements because
-                    # Deny is normally a security control.
-
-                    continue
-
-                # -------------------------------------------------
-                # ONLY ANALYZE ALLOW STATEMENTS
-                # -------------------------------------------------
-
-                if effect != "Allow":
+                if statement.get("Effect") != "Allow":
                     continue
 
                 # -------------------------------------------------
@@ -376,7 +484,6 @@ def scan_iam(resource, severity):
                 )
 
                 if isinstance(actions, str):
-
                     actions = [actions]
 
                 # -------------------------------------------------
@@ -389,31 +496,30 @@ def scan_iam(resource, severity):
                 )
 
                 if isinstance(resources, str):
-
                     resources = [resources]
 
                 # -------------------------------------------------
                 # CONDITION
                 # -------------------------------------------------
 
-                conditions = statement.get(
+                condition = statement.get(
                     "Condition",
                     {}
                 )
 
                 # -------------------------------------------------
-                # ANALYZE CONDITIONS
+                # Analyze condition
                 # -------------------------------------------------
 
                 analyze_conditions(
                     policy_name,
                     policy_type,
                     attached_to,
-                    conditions
+                    condition
                 )
 
                 # -------------------------------------------------
-                # ANALYZE ACTION + RESOURCE
+                # Analyze actions + resources
                 # -------------------------------------------------
 
                 analyze_resources(
@@ -662,7 +768,8 @@ def scan_iam(resource, severity):
             )
 
             # -------------------------------------------------
-            # Remove duplicate recommendations
+            # Remove duplicate recommendations while
+            # preserving their order
             # -------------------------------------------------
 
             recommendations = list(
