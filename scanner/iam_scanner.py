@@ -4,6 +4,52 @@ from urllib.parse import unquote
 from scanner.models import Finding
 
 
+def analyze_condition_context(condition):
+    """
+    Identify useful IAM condition controls.
+
+    Returns a list of human-readable condition descriptions.
+    """
+
+    controls = []
+
+    if not condition:
+        return controls
+
+    for operator, condition_values in condition.items():
+
+        if not isinstance(condition_values, dict):
+            continue
+
+        for key, value in condition_values.items():
+
+            if key == "aws:SecureTransport":
+                if str(value).lower() == "true":
+                    controls.append(
+                        "SecureTransport=true"
+                    )
+
+            elif key == "aws:SourceIp":
+                controls.append(
+                    f"SourceIp={value}"
+                )
+
+            elif key.startswith(
+                "aws:PrincipalTag/"
+            ):
+                controls.append(
+                    f"PrincipalTag condition: "
+                    f"{key}={value}"
+                )
+
+            else:
+                controls.append(
+                    f"{key}={value}"
+                )
+
+    return controls
+
+
 def scan_iam(resource, severity):
 
     iam = boto3.client("iam")
@@ -474,6 +520,25 @@ def scan_iam(resource, severity):
                 if statement.get("Effect") != "Allow":
                     continue
 
+                actions = statement.get(
+                    "Action",
+                     []
+                )
+
+                condition = statement.get(
+                    "Condition",
+                    {}
+                )
+
+                condition_controls = analyze_condition_context(
+                    condition
+                )
+
+                # Day 12 condition context is informational for now.
+                # Future versions can use these controls to refine
+                # severity without changing the existing scanner logic.
+                _ = condition_controls
+
                 # -------------------------------------------------
                 # ACTION
                 # -------------------------------------------------
@@ -497,15 +562,6 @@ def scan_iam(resource, severity):
 
                 if isinstance(resources, str):
                     resources = [resources]
-
-                # -------------------------------------------------
-                # CONDITION
-                # -------------------------------------------------
-
-                condition = statement.get(
-                    "Condition",
-                    {}
-                )
 
                 # -------------------------------------------------
                 # Analyze condition
