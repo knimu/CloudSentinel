@@ -1,7 +1,36 @@
 import boto3
 from urllib.parse import unquote
-
 from scanner.models import Finding
+
+def analyze_explicit_deny(statement):
+    """
+    Identify explicit IAM Deny statements.
+
+    An explicit Deny is a security control because it
+    overrides matching Allow permissions.
+    """
+
+    if not isinstance(statement, dict):
+        return None
+
+    effect = statement.get("Effect")
+
+    if effect != "Deny":
+        return None
+
+    actions = statement.get("Action", [])
+    resources = statement.get("Resource", [])
+
+    if isinstance(actions, str):
+        actions = [actions]
+
+    if isinstance(resources, str):
+        resources = [resources]
+
+    return {
+        "actions": actions,
+        "resources": resources,
+    }
 
 
 def analyze_condition_context(condition):
@@ -517,8 +546,19 @@ def scan_iam(resource, severity):
                 # We only analyze Allow statements
                 # -------------------------------------------------
 
-                if statement.get("Effect") != "Allow":
-                    continue
+                effect = statement.get("Effect")
+
+                if effect == "Deny":
+                   deny_context = analyze_explicit_deny(statement)
+
+                   # Explicit Deny is a security control.
+                   # It is intentionally not reported as a vulnerability.
+                   _ = deny_context
+
+                   continue
+
+                if effect != "Allow":
+                   continue
 
                 actions = statement.get(
                     "Action",
